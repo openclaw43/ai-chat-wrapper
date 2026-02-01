@@ -13,9 +13,18 @@ const db = new Database(DB_PATH);
 
 db.pragma('journal_mode = WAL');
 
+export interface Branch {
+  id: number;
+  conversation_id: number;
+  parent_message_id: number | null;
+  title: string;
+  created_at: string;
+}
+
 export interface Message {
   id: number;
   conversation_id: number;
+  branch_id: number | null;
   role: 'user' | 'assistant' | 'system';
   content: string;
   created_at: string;
@@ -38,16 +47,30 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS branches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    parent_message_id INTEGER,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_message_id) REFERENCES messages(id) ON DELETE SET NULL
+  );
+
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL,
+    branch_id INTEGER,
     role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
     content TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
   );
 
   CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_branch_id ON messages(branch_id);
+  CREATE INDEX IF NOT EXISTS idx_branches_conversation_id ON branches(conversation_id);
   CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);
 `);
 
@@ -79,13 +102,49 @@ export const dbQueries = {
     DELETE FROM conversations WHERE id = ?
   `),
 
-  createMessage: db.prepare<[number, string, string], Message>(`
-    INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)
+  createBranch: db.prepare<[number, number | null, string], Branch>(`
+    INSERT INTO branches (conversation_id, parent_message_id, title) VALUES (?, ?, ?)
+    RETURNING *
+  `),
+
+  getBranch: db.prepare<[number], Branch>(`
+    SELECT * FROM branches WHERE id = ?
+  `),
+
+  getBranchesByConversation: db.prepare<[number], Branch>(`
+    SELECT * FROM branches WHERE conversation_id = ? ORDER BY created_at ASC
+  `),
+
+  getBranchesByParentMessage: db.prepare<[number], Branch>(`
+    SELECT * FROM branches WHERE parent_message_id = ? ORDER BY created_at ASC
+  `),
+
+  updateBranchTitle: db.prepare<[string, number], Branch>(`
+    UPDATE branches SET title = ? WHERE id = ?
+    RETURNING *
+  `),
+
+  deleteBranch: db.prepare<[number]>(`
+    DELETE FROM branches WHERE id = ?
+  `),
+
+  createMessage: db.prepare<[number, number | null, string, string], Message>(`
+    INSERT INTO messages (conversation_id, branch_id, role, content) VALUES (?, ?, ?, ?)
     RETURNING *
   `),
 
   getMessages: db.prepare<[number], Message>(`
     SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC
+  `),
+
+  getMessagesByBranch: db.prepare<[number], Message>(`
+    SELECT * FROM messages WHERE branch_id = ? ORDER BY created_at ASC
+  `),
+
+  getMessagesForConversation: db.prepare<[number, number | null], Message>(`
+    SELECT * FROM messages 
+    WHERE conversation_id = ? AND (branch_id IS NULL OR branch_id = ?)
+    ORDER BY created_at ASC
   `),
 
   deleteMessages: db.prepare<[number]>(`
